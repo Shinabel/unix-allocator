@@ -1,332 +1,185 @@
+// CS3650 CH02 starter code
+// Spring 2019
+//
+// Author: Nat Tuck
+//
+// Once you've read this, you're done with the simple allocator homework.
 
-#include <stdlib.h>
+#include <stdint.h>
 #include <sys/mman.h>
+#include <assert.h>
 #include <stdio.h>
-
-#include "omem.h"
 #include <pthread.h>
 #include <string.h>
 
-/*
-  typedef struct hm_stats {
-  long pages_mapped;
-  long pages_unmapped;
-  long chunks_allocated;
-  long chunks_freed;
-  long free_length;
-  } hm_stats;
-*/
+#include "omem.h"
 
+typedef struct nu_free_cell {
+    int64_t              size;
+    struct nu_free_cell* next;
+} nu_free_cell;
 
-// A node on the free list
-typedef struct om_free_node_t
-{
-    struct om_free_node_t *next;
-    size_t size;
-} om_free_node_t;
-
-// A header for an allocated block
-typedef struct om_header_t
-{
-    size_t size;
-} om_header_t;
-
-const size_t PAGE_SIZE = 4096;
-static om_stats stats; // This initializes the stats to 0.
 static pthread_mutex_t lock = PTHREAD_MUTEX_INITIALIZER;
+static const int64_t CHUNK_SIZE = 65536;
+static const int64_t CELL_SIZE  = (int64_t)sizeof(nu_free_cell);
 
-om_free_node_t *free_list = NULL;
+static nu_free_cell* nu_free_list = 0;
 
-// Insert node into free list (sorted by address)
+static long nu_malloc_chunks = 0;
+static long nu_free_chunks = 0;
+
+int64_t
+nu_free_list_length()
+{
+    int len = 0;
+
+    for (nu_free_cell* pp = nu_free_list; pp != 0; pp = pp->next) {
+        len++;
+    }
+
+    return len;
+}
+
+void
+nu_print_free_list()
+{
+    nu_free_cell* pp = nu_free_list;
+    printf("= Free list: =\n");
+
+    for (; pp != 0; pp = pp->next) {
+        printf("%lx: (cell %ld %lx)\n", (int64_t) pp, pp->size, (int64_t) pp->next); 
+
+    }
+}
+
 static
-void insert_node(om_free_node_t *node)
+void
+nu_free_list_coalesce()
 {
-    if (free_list == NULL)
-    {
-        free_list = node;
-        node->next = NULL;
-        return;
-    }
+    nu_free_cell* pp = nu_free_list;
+    int free_chunk = 0;
 
-    om_free_node_t *curr_node = free_list;
-    om_free_node_t *prev_node = NULL;
-
-    while (curr_node != NULL && curr_node < node)
-    {
-        prev_node = curr_node;
-        curr_node = curr_node->next;
-    }
-
-    if (prev_node == NULL)
-    {
-        node->next = curr_node;
-        free_list = node;
-        return;
-    }
-
-    prev_node->next = node;
-    node->next = curr_node;
-}
-
-// Remove node from free list
-static
-void remove_node(om_free_node_t *node)
-{
-    if (free_list == NULL || node == NULL)
-    {
-        return;
-    }
-
-    om_free_node_t *curr_node = free_list;
-    om_free_node_t *prev_node = NULL;
-
-    while (curr_node != NULL && curr_node != node)
-    {
-        prev_node = curr_node;
-        curr_node = curr_node->next;
-    }
-
-    if (prev_node == NULL)
-    {
-        free_list = curr_node->next;
-        return;
-    }
-
-    if (curr_node == NULL)
-    {
-        prev_node->next = NULL;
-        return;
-    }
-
-    prev_node->next = curr_node->next;
-}
-
-// Length of free list
-long free_list_length()
-{
-    om_free_node_t *curr_node = free_list;
-    int i = 0;
-    while (curr_node != NULL)
-    {
-        curr_node = curr_node->next;
-        i++;
-    }
-    return i;
-}
-
-// Get allocator stats
-om_stats *
-ogetstats()
-{
-    stats.free_length = free_list_length();
-    return &stats;
-}
-
-// Print allocator stats
-void oprintstats()
-{
-    stats.free_length = free_list_length();
-    fprintf(stderr, "\n== husky malloc stats ==\n");
-    fprintf(stderr, "Mapped:   %ld\n", stats.pages_mapped);
-    fprintf(stderr, "Unmapped: %ld\n", stats.pages_unmapped);
-    fprintf(stderr, "Allocs:   %ld\n", stats.chunks_allocated);
-    fprintf(stderr, "Frees:    %ld\n", stats.chunks_freed);
-    fprintf(stderr, "Freelen:  %ld\n", stats.free_length);
-}
-
-// Ceiling of xx / yy
-static size_t
-div_up(size_t xx, size_t yy)
-{
-    // This is useful to calculate # of pages
-    // for large allocations.
-    size_t zz = xx / yy;
-
-    if (zz * yy == xx)
-    {
-        return zz;
-    }
-    else
-    {
-        return zz + 1;
-    }
-}
-
-// Map a new page for allocations less than 4K
-static
-void *
-map_page(size_t size)
-{
-    size_t remaining = PAGE_SIZE > (size + sizeof(om_header_t) + sizeof(om_free_node_t));
-
-    if (remaining == 0)
-    {
-        size = PAGE_SIZE - sizeof(om_header_t);
-    }
-
-    om_header_t *header = mmap(0, PAGE_SIZE, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
-    stats.pages_mapped++;
-
-    header->size = size;
-    void *alloc_add = (void *)header + sizeof(om_header_t);
-    stats.chunks_allocated++;
-
-    if (remaining != 0)
-    {
-        om_free_node_t *free = alloc_add + size;
-        free->size = PAGE_SIZE - (size + sizeof(om_header_t));
-        insert_node(free);
-    }
-
-    return alloc_add;
-}
-
-// Allocate from free list
-void *
-alloc_free(om_free_node_t *free_block, size_t size)
-{
-    remove_node(free_block);
-
-    size_t prev_size = free_block->size;
-
-    size_t remaining = prev_size > (size + sizeof(om_header_t) + sizeof(om_free_node_t));
-
-    if (remaining == 0)
-    {
-        size = prev_size - sizeof(om_header_t);
-    }
-
-    om_header_t *header = (om_header_t *)free_block;
-    header->size = size;
-    void *alloc_add = (void *)header + sizeof(om_header_t);
-    stats.chunks_allocated++;
-
-    if (remaining != 0)
-    {
-        om_free_node_t *free = alloc_add + size;
-        free->size = prev_size - (size + sizeof(size_t));
-        insert_node(free);
-    }
-
-    return alloc_add;
-}
-
-// Map large allocations over 4K
-static
-void *
-map_large(size_t size)
-{
-    size_t total = size + sizeof(om_header_t);
-    size_t num_pages = div_up(total, PAGE_SIZE);
-    size_t pages_size = num_pages * PAGE_SIZE;
-
-    om_header_t *header = mmap(0, pages_size, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
-    stats.pages_mapped += num_pages;
-    void *alloc_add = (void *)header + sizeof(om_header_t);
-    stats.chunks_allocated++;
-    header->size = pages_size;
-
-    return alloc_add;
-}
-
-// Allocate dynamic memory with mmap
-void *
-omalloc(size_t size)
-{
-    pthread_mutex_lock(&lock);
-    if (free_list != NULL)
-    {
-    }
-    if (size <= 0)
-    {
-        return (void *)0xDEADBEEF;
-    }
-
-    if (size > PAGE_SIZE - sizeof(om_header_t))
-    {
-        return map_large(size);
-    }
-
-    if (free_list == NULL)
-    {
-        return map_page(size);
-    }
-
-    om_free_node_t *curr_free = free_list;
-
-    while (curr_free != NULL)
-    {
-        if (curr_free->size > (size + sizeof(size_t)))
-        {
-            return alloc_free(curr_free, size);
+    while (pp != 0 && pp->next != 0) {
+        if (((int64_t)pp) + pp->size == ((int64_t) pp->next)) {
+            pp->size += pp->next->size;
+            pp->next  = pp->next->next;
         }
 
-        curr_free = curr_free->next;
+        pp = pp->next;
     }
+}
+
+static
+void
+nu_free_list_insert(nu_free_cell* cell)
+{
+    if (nu_free_list == 0 || ((uint64_t) nu_free_list) > ((uint64_t) cell)) {
+        cell->next = nu_free_list;
+        nu_free_list = cell;
+        return;
+    }
+
+    nu_free_cell* pp = nu_free_list;
+
+    while (pp->next != 0 && ((uint64_t)pp->next) < ((uint64_t) cell)) {
+        pp = pp->next;
+    }
+
+    cell->next = pp->next;
+    pp->next = cell;
+
+    nu_free_list_coalesce();
+}
+
+static
+nu_free_cell*
+free_list_get_cell(int64_t size)
+{
+    nu_free_cell** prev = &nu_free_list;
+
+    for (nu_free_cell* pp = nu_free_list; pp != 0; pp = pp->next) {
+        if (pp->size >= size) {
+            *prev = pp->next;
+            return pp;
+        }
+        prev = &(pp->next);
+    }
+    return 0;
+}
+
+static
+nu_free_cell*
+make_cell()
+{
+    void* addr = mmap(0, CHUNK_SIZE, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
+    nu_free_cell* cell = (nu_free_cell*) addr; 
+    cell->size = CHUNK_SIZE;
+    return cell;
+}
+
+void*
+omalloc(size_t usize)
+{
+    pthread_mutex_lock(&lock);
+    int64_t size = (int64_t) usize;
+
+    // space for size
+    int64_t alloc_size = size + sizeof(int64_t);
+
+    // space for free cell when returned to list
+    if (alloc_size < CELL_SIZE) {
+        alloc_size = CELL_SIZE;
+    }
+
+    // TODO: Handle large allocations.
+    if (alloc_size > CHUNK_SIZE) {
+        void* addr = mmap(0, alloc_size, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
+        *((int64_t*)addr) = alloc_size;
+        nu_malloc_chunks += 1;
+        return addr + sizeof(int64_t);
+    }
+
+    nu_free_cell* cell = free_list_get_cell(alloc_size);
+    if (!cell) {
+        cell = make_cell();
+    }
+
+    // Return unused portion to free list.
+    int64_t rest_size = cell->size - alloc_size;
+    if (rest_size >= CELL_SIZE) {
+        void* addr = (void*) cell;
+        nu_free_cell* rest = (nu_free_cell*) (addr + alloc_size);
+        rest->size = rest_size;
+        nu_free_list_insert(rest);
+    }
+
+    *((int64_t*)cell) = alloc_size;
     pthread_mutex_unlock(&lock);
-    return map_page(size);
+    return ((void*)cell) + sizeof(int64_t);
 }
 
-// Free large allocation over 4K
-void free_large(void *item, size_t size)
-{
-    munmap(item - sizeof(om_header_t), size);
-    size_t num_pages = div_up(size, PAGE_SIZE);
-    stats.pages_unmapped += num_pages;
-    stats.chunks_freed++;
-}
-
-// Coalesce free list nodes
-static
-void coalesce_free()
-{
-
-    om_free_node_t *curr_node = free_list;
-    om_free_node_t *prev_node = NULL;
-
-    while (curr_node)
-    {
-        if (prev_node != NULL && (void *)prev_node + prev_node->size == curr_node)
-        {
-            prev_node->size += curr_node->size;
-            prev_node->next = curr_node->next;
-        }
-        else
-        {
-            prev_node = curr_node;
-        }
-        curr_node = curr_node->next;
-    }
-}
-
-// Free allocated memory
-void ofree(void *item)
+void
+ofree(void* addr) 
 {
     pthread_mutex_lock(&lock);
-    om_header_t *header = item - sizeof(om_header_t);
+    nu_free_cell* cell = (nu_free_cell*)(addr - sizeof(int64_t));
+    int64_t size = *((int64_t*) cell);
 
-    size_t size = header->size;
-
-    if (size > PAGE_SIZE - sizeof(om_header_t))
-    {
-        free_large(item, size);
-        return;
+    if (size > CHUNK_SIZE) {
+        nu_free_chunks += 1;
+        munmap((void*) cell, size);
     }
-
-    om_free_node_t *node = (om_free_node_t *)header;
-    node->size = header->size + sizeof(om_header_t);
-    insert_node(node);
-    stats.chunks_freed++;
-    coalesce_free();
+    else {
+        cell->size = size;
+        nu_free_list_insert(cell);
+    }
     pthread_mutex_unlock(&lock);
 }
 
 void* orealloc(void* prev, size_t bytes)
 {
     void* newaddr = omalloc(bytes);
-    om_header_t* nodepart = (void*)prev - sizeof(om_header_t);
-    size_t s = nodepart->size;
-    memcpy(newaddr, prev, s);
+    memcpy(newaddr, prev, bytes);
     ofree(prev);
     return newaddr;
 }
