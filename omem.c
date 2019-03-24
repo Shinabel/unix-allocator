@@ -3,7 +3,7 @@
 #include <sys/mman.h>
 #include <stdio.h>
 
-#include "hmalloc.h"
+#include "omem.h"
 #include <pthread.h>
 #include <string.h>
 
@@ -19,27 +19,27 @@
 
 
 // A node on the free list
-typedef struct hm_free_node_t
+typedef struct om_free_node_t
 {
-    struct hm_free_node_t *next;
+    struct om_free_node_t *next;
     size_t size;
-} hm_free_node_t;
+} om_free_node_t;
 
 // A header for an allocated block
-typedef struct hm_header_t
+typedef struct om_header_t
 {
     size_t size;
-} hm_header_t;
+} om_header_t;
 
 const size_t PAGE_SIZE = 4096;
-static hm_stats stats; // This initializes the stats to 0.
+static om_stats stats; // This initializes the stats to 0.
 static pthread_mutex_t lock = PTHREAD_MUTEX_INITIALIZER;
 
-hm_free_node_t *free_list = NULL;
+om_free_node_t *free_list = NULL;
 
 // Insert node into free list (sorted by address)
 static
-void insert_node(hm_free_node_t *node)
+void insert_node(om_free_node_t *node)
 {
     if (free_list == NULL)
     {
@@ -48,8 +48,8 @@ void insert_node(hm_free_node_t *node)
         return;
     }
 
-    hm_free_node_t *curr_node = free_list;
-    hm_free_node_t *prev_node = NULL;
+    om_free_node_t *curr_node = free_list;
+    om_free_node_t *prev_node = NULL;
 
     while (curr_node != NULL && curr_node < node)
     {
@@ -70,15 +70,15 @@ void insert_node(hm_free_node_t *node)
 
 // Remove node from free list
 static
-void remove_node(hm_free_node_t *node)
+void remove_node(om_free_node_t *node)
 {
     if (free_list == NULL || node == NULL)
     {
         return;
     }
 
-    hm_free_node_t *curr_node = free_list;
-    hm_free_node_t *prev_node = NULL;
+    om_free_node_t *curr_node = free_list;
+    om_free_node_t *prev_node = NULL;
 
     while (curr_node != NULL && curr_node != node)
     {
@@ -104,7 +104,7 @@ void remove_node(hm_free_node_t *node)
 // Length of free list
 long free_list_length()
 {
-    hm_free_node_t *curr_node = free_list;
+    om_free_node_t *curr_node = free_list;
     int i = 0;
     while (curr_node != NULL)
     {
@@ -115,15 +115,15 @@ long free_list_length()
 }
 
 // Get allocator stats
-hm_stats *
-hgetstats()
+om_stats *
+ogetstats()
 {
     stats.free_length = free_list_length();
     return &stats;
 }
 
 // Print allocator stats
-void hprintstats()
+void oprintstats()
 {
     stats.free_length = free_list_length();
     fprintf(stderr, "\n== husky malloc stats ==\n");
@@ -157,24 +157,24 @@ static
 void *
 map_page(size_t size)
 {
-    size_t remaining = PAGE_SIZE > (size + sizeof(hm_header_t) + sizeof(hm_free_node_t));
+    size_t remaining = PAGE_SIZE > (size + sizeof(om_header_t) + sizeof(om_free_node_t));
 
     if (remaining == 0)
     {
-        size = PAGE_SIZE - sizeof(hm_header_t);
+        size = PAGE_SIZE - sizeof(om_header_t);
     }
 
-    hm_header_t *header = mmap(0, PAGE_SIZE, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
+    om_header_t *header = mmap(0, PAGE_SIZE, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
     stats.pages_mapped++;
 
     header->size = size;
-    void *alloc_add = (void *)header + sizeof(hm_header_t);
+    void *alloc_add = (void *)header + sizeof(om_header_t);
     stats.chunks_allocated++;
 
     if (remaining != 0)
     {
-        hm_free_node_t *free = alloc_add + size;
-        free->size = PAGE_SIZE - (size + sizeof(hm_header_t));
+        om_free_node_t *free = alloc_add + size;
+        free->size = PAGE_SIZE - (size + sizeof(om_header_t));
         insert_node(free);
     }
 
@@ -183,27 +183,27 @@ map_page(size_t size)
 
 // Allocate from free list
 void *
-alloc_free(hm_free_node_t *free_block, size_t size)
+alloc_free(om_free_node_t *free_block, size_t size)
 {
     remove_node(free_block);
 
     size_t prev_size = free_block->size;
 
-    size_t remaining = prev_size > (size + sizeof(hm_header_t) + sizeof(hm_free_node_t));
+    size_t remaining = prev_size > (size + sizeof(om_header_t) + sizeof(om_free_node_t));
 
     if (remaining == 0)
     {
-        size = prev_size - sizeof(hm_header_t);
+        size = prev_size - sizeof(om_header_t);
     }
 
-    hm_header_t *header = (hm_header_t *)free_block;
+    om_header_t *header = (om_header_t *)free_block;
     header->size = size;
-    void *alloc_add = (void *)header + sizeof(hm_header_t);
+    void *alloc_add = (void *)header + sizeof(om_header_t);
     stats.chunks_allocated++;
 
     if (remaining != 0)
     {
-        hm_free_node_t *free = alloc_add + size;
+        om_free_node_t *free = alloc_add + size;
         free->size = prev_size - (size + sizeof(size_t));
         insert_node(free);
     }
@@ -216,13 +216,13 @@ static
 void *
 map_large(size_t size)
 {
-    size_t total = size + sizeof(hm_header_t);
+    size_t total = size + sizeof(om_header_t);
     size_t num_pages = div_up(total, PAGE_SIZE);
     size_t pages_size = num_pages * PAGE_SIZE;
 
-    hm_header_t *header = mmap(0, pages_size, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
+    om_header_t *header = mmap(0, pages_size, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
     stats.pages_mapped += num_pages;
-    void *alloc_add = (void *)header + sizeof(hm_header_t);
+    void *alloc_add = (void *)header + sizeof(om_header_t);
     stats.chunks_allocated++;
     header->size = pages_size;
 
@@ -231,7 +231,7 @@ map_large(size_t size)
 
 // Allocate dynamic memory with mmap
 void *
-hmalloc(size_t size)
+omalloc(size_t size)
 {
     pthread_mutex_lock(&lock);
     if (free_list != NULL)
@@ -242,7 +242,7 @@ hmalloc(size_t size)
         return (void *)0xDEADBEEF;
     }
 
-    if (size > PAGE_SIZE - sizeof(hm_header_t))
+    if (size > PAGE_SIZE - sizeof(om_header_t))
     {
         return map_large(size);
     }
@@ -252,7 +252,7 @@ hmalloc(size_t size)
         return map_page(size);
     }
 
-    hm_free_node_t *curr_free = free_list;
+    om_free_node_t *curr_free = free_list;
 
     while (curr_free != NULL)
     {
@@ -270,7 +270,7 @@ hmalloc(size_t size)
 // Free large allocation over 4K
 void free_large(void *item, size_t size)
 {
-    munmap(item - sizeof(hm_header_t), size);
+    munmap(item - sizeof(om_header_t), size);
     size_t num_pages = div_up(size, PAGE_SIZE);
     stats.pages_unmapped += num_pages;
     stats.chunks_freed++;
@@ -281,8 +281,8 @@ static
 void coalesce_free()
 {
 
-    hm_free_node_t *curr_node = free_list;
-    hm_free_node_t *prev_node = NULL;
+    om_free_node_t *curr_node = free_list;
+    om_free_node_t *prev_node = NULL;
 
     while (curr_node)
     {
@@ -300,35 +300,33 @@ void coalesce_free()
 }
 
 // Free allocated memory
-void hfree(void *item)
+void ofree(void *item)
 {
     pthread_mutex_lock(&lock);
-    hm_header_t *header = item - sizeof(hm_header_t);
+    om_header_t *header = item - sizeof(om_header_t);
 
     size_t size = header->size;
 
-    if (size > PAGE_SIZE - sizeof(hm_header_t))
+    if (size > PAGE_SIZE - sizeof(om_header_t))
     {
         free_large(item, size);
         return;
     }
 
-    hm_free_node_t *node = (hm_free_node_t *)header;
-    node->size = header->size + sizeof(hm_header_t);
+    om_free_node_t *node = (om_free_node_t *)header;
+    node->size = header->size + sizeof(om_header_t);
     insert_node(node);
     stats.chunks_freed++;
     coalesce_free();
     pthread_mutex_unlock(&lock);
 }
 
-void* hrealloc(void* prev, size_t bytes)
+void* orealloc(void* prev, size_t bytes)
 {
-    void* newaddr = hmalloc(bytes);
-    // I haven't fully followed through your code yet but we might need to do:
-    //  void* nodepart = (void*)(prev - sizeof(header));
-    //  size_t s = *((size_t*)nodepart);
-    //  memcpy(newaddr, prev, s);
-    memcpy(newaddr, prev, bytes);
-    hfree(prev);
+    void* newaddr = omalloc(bytes);
+    om_header_t* nodepart = (void*)prev - sizeof(om_header_t);
+    size_t s = nodepart->size;
+    memcpy(newaddr, prev, s);
+    ofree(prev);
     return newaddr;
 }

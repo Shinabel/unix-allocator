@@ -4,7 +4,7 @@
 #include <string.h>
 
 #include "xmalloc.h"
-#include "hmalloc.h"
+#include "hmem.h"
 
 void*
 xmalloc(size_t bytes)

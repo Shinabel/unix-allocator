@@ -10,7 +10,7 @@
 #include <assert.h>
 #include <stdio.h>
 
-#include "hmem.h"
+#include "hmalloc.h"
 
 typedef struct nu_free_cell {
     int64_t              size;
