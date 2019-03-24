@@ -9,18 +9,24 @@
 #include <sys/mman.h>
 #include <assert.h>
 #include <stdio.h>
+#include <pthread.h>
+#include <string.h>
 
-#include "hmalloc.h"
+#include "hmem.h"
 
 typedef struct nu_free_cell {
     int64_t              size;
     struct nu_free_cell* next;
 } nu_free_cell;
 
+static pthread_mutex_t lock = PTHREAD_MUTEX_INITIALIZER;
 static const int64_t CHUNK_SIZE = 65536;
 static const int64_t CELL_SIZE  = (int64_t)sizeof(nu_free_cell);
 
 static nu_free_cell* nu_free_list = 0;
+
+static long nu_malloc_chunks = 0;
+static long nu_free_chunks = 0;
 
 int64_t
 nu_free_list_length()
@@ -114,6 +120,7 @@ make_cell()
 void*
 hmalloc(size_t usize)
 {
+    pthread_mutex_lock(&lock);
     int64_t size = (int64_t) usize;
 
     // space for size
@@ -147,12 +154,14 @@ hmalloc(size_t usize)
     }
 
     *((int64_t*)cell) = alloc_size;
+    pthread_mutex_unlock(&lock);
     return ((void*)cell) + sizeof(int64_t);
 }
 
 void
 hfree(void* addr) 
 {
+    pthread_mutex_lock(&lock);
     nu_free_cell* cell = (nu_free_cell*)(addr - sizeof(int64_t));
     int64_t size = *((int64_t*) cell);
 
@@ -164,5 +173,13 @@ hfree(void* addr)
         cell->size = size;
         nu_free_list_insert(cell);
     }
+    pthread_mutex_unlock(&lock);
 }
 
+void* hrealloc(void* prev, size_t bytes)
+{
+    void* newaddr = hmalloc(bytes);
+    memcpy(newaddr, prev, bytes);
+    hfree(prev);
+    return newaddr;
+}
