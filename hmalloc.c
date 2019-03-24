@@ -153,6 +153,7 @@ div_up(size_t xx, size_t yy)
 }
 
 // Map a new page for allocations less than 4K
+static
 void *
 map_page(size_t size)
 {
