@@ -4,6 +4,8 @@
 #include <stdio.h>
 
 #include "hmalloc.h"
+#include <pthread.h>
+#include <string.h>
 
 /*
   typedef struct hm_stats {
@@ -14,6 +16,7 @@
   long free_length;
   } hm_stats;
 */
+
 
 // A node on the free list
 typedef struct hm_free_node_t
@@ -30,10 +33,12 @@ typedef struct hm_header_t
 
 const size_t PAGE_SIZE = 4096;
 static hm_stats stats; // This initializes the stats to 0.
+static pthread_mutex_t lock = PTHREAD_MUTEX_INITIALIZER;
 
 hm_free_node_t *free_list = NULL;
 
 // Insert node into free list (sorted by address)
+static
 void insert_node(hm_free_node_t *node)
 {
     if (free_list == NULL)
@@ -64,6 +69,7 @@ void insert_node(hm_free_node_t *node)
 }
 
 // Remove node from free list
+static
 void remove_node(hm_free_node_t *node)
 {
     if (free_list == NULL || node == NULL)
@@ -205,6 +211,7 @@ alloc_free(hm_free_node_t *free_block, size_t size)
 }
 
 // Map large allocations over 4K
+static
 void *
 map_large(size_t size)
 {
@@ -225,6 +232,7 @@ map_large(size_t size)
 void *
 hmalloc(size_t size)
 {
+    pthread_mutex_lock(&lock);
     if (free_list != NULL)
     {
     }
@@ -254,7 +262,7 @@ hmalloc(size_t size)
 
         curr_free = curr_free->next;
     }
-
+    pthread_mutex_unlock(&lock);
     return map_page(size);
 }
 
@@ -268,6 +276,7 @@ void free_large(void *item, size_t size)
 }
 
 // Coalesce free list nodes
+static
 void coalesce_free()
 {
 
@@ -292,6 +301,7 @@ void coalesce_free()
 // Free allocated memory
 void hfree(void *item)
 {
+    pthread_mutex_lock(&lock);
     hm_header_t *header = item - sizeof(hm_header_t);
 
     size_t size = header->size;
@@ -307,8 +317,17 @@ void hfree(void *item)
     insert_node(node);
     stats.chunks_freed++;
     coalesce_free();
+    pthread_mutex_unlock(&lock);
 }
 
-void *hrealloc(void* prev, size_t bytes) {
-    return (void *)0xDEADBEEF;
+void* hrealloc(void* prev, size_t bytes)
+{
+    void* newaddr = hmalloc(bytes);
+    // I haven't fully followed through your code yet but we might need to do:
+    //  void* nodepart = (void*)(prev - sizeof(header));
+    //  size_t s = *((size_t*)nodepart);
+    //  memcpy(newaddr, prev, s);
+    memcpy(newaddr, prev, bytes);
+    hfree(prev);
+    return newaddr;
 }
