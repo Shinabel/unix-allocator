@@ -308,3 +308,7 @@ void hfree(void *item)
     stats.chunks_freed++;
     coalesce_free();
 }
+
+void *hrealloc(void* prev, size_t bytes) {
+    return (void *)0xDEADBEEF;
+}
