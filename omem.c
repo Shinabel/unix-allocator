@@ -40,11 +40,11 @@ typedef struct nu_bin
 
 static pthread_mutex_t lock = PTHREAD_MUTEX_INITIALIZER;
 
-//static int bin_length = 8;
-static nu_bin bins[8];
+#define BIN_LENGTH 20
+static nu_bin bins[BIN_LENGTH];
 static int bin_init = 0;
 
-static const int64_t CHUNK_SIZE = 4096;
+static const int64_t CHUNK_SIZE = 8192;
 static const int64_t CELL_SIZE = (int64_t)sizeof(nu_free_cell);
 
 static nu_free_cell *nu_free_list = 0;
@@ -53,9 +53,12 @@ static long nu_malloc_chunks = 0;
 static long nu_free_chunks = 0;
 
 void init_bins() {
-    for (int i = 0; i < 8; i++) {
-        bins[i].size = 1 << (i+4); // starting from 32 = 2^5
+    int64_t s = 16;
+    for (int i = 0; i < BIN_LENGTH; i++) {
+        bins[i].size = s;
+        // bins[i].size = 1 << (i+4); // starting from 16 = 2^4
         bins[i].node = NULL;
+        s += 128;
     }
     bin_init = 1;
 }
@@ -107,7 +110,7 @@ nu_free_list_insert(nu_free_cell *cell)
 {
     nu_footer* footer = (void *)cell + cell->size - sizeof(nu_footer);
     footer->size = cell->size;
-    for (int i = 0; i < 7; i++) {
+    for (int i = 0; i < BIN_LENGTH - 1; i++) {
         if (bins[i].size <= cell->size && bins[i+1].size > cell->size) {
             nu_free_cell *temp = bins[i].node;
             bins[i].node = cell;
@@ -120,8 +123,8 @@ nu_free_list_insert(nu_free_cell *cell)
         }
     }
     // big ones go to bins[last]
-    nu_free_cell *temp = bins[7].node;
-    bins[7].node = cell;
+    nu_free_cell *temp = bins[BIN_LENGTH - 1].node;
+    bins[BIN_LENGTH - 1].node = cell;
     cell->next = temp;
     cell->prev = NULL;
     if (temp != NULL) {
@@ -133,7 +136,7 @@ nu_free_list_insert(nu_free_cell *cell)
 static nu_free_cell *
 free_list_get_cell(int64_t size)
 {
-    for (int i = 0; i < 8; i++) {
+    for (int i = 0; i < BIN_LENGTH; i++) {
         if (bins[i].node != NULL && bins[i].size >= size) {
             nu_free_cell *temp = bins[i].node;
             bins[i].node = bins[i].node->next;
@@ -225,7 +228,9 @@ void ofree(void *addr)
 void *orealloc(void *prev, size_t bytes)
 {
     void *newaddr = omalloc(bytes);
-    memcpy(newaddr, prev, bytes);
+    nu_header* nodepart = (void*)prev - sizeof(nu_header);
+    size_t s = nodepart->size;
+    memcpy(newaddr, prev, s);
     ofree(prev);
     return newaddr;
 }
