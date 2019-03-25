@@ -54,7 +54,7 @@ static long nu_free_chunks = 0;
 
 void init_bins() {
     for (int i = 0; i < 8; i++) {
-        bins[i].size = 1 << (i+5); // starting from 32 = 2^5
+        bins[i].size = 1 << (i+4); // starting from 32 = 2^5
         bins[i].node = NULL;
     }
     bin_init = 1;
@@ -109,7 +109,6 @@ nu_free_list_insert(nu_free_cell *cell)
     footer->size = cell->size;
     for (int i = 0; i < 7; i++) {
         if (bins[i].size <= cell->size && bins[i+1].size > cell->size) {
-            printf("HI");
             nu_free_cell *temp = bins[i].node;
             bins[i].node = cell;
             cell->next = temp;
@@ -117,8 +116,18 @@ nu_free_list_insert(nu_free_cell *cell)
             if (temp != NULL) {
                 temp->prev = cell;
             }
+            return;
         }
     }
+    // big ones go to bins[last]
+    nu_free_cell *temp = bins[7].node;
+    bins[7].node = cell;
+    cell->next = temp;
+    cell->prev = NULL;
+    if (temp != NULL) {
+        temp->prev = cell;
+    }
+    return;
 }
 
 static nu_free_cell *
