@@ -143,7 +143,6 @@ omalloc(size_t usize)
         // madvise(addr, alloc_size, MADV_DONTNEED);
         *((int64_t *)addr) = alloc_size;
         nu_malloc_chunks += 1;
-        pthread_mutex_unlock(&lock);
         return addr + sizeof(int64_t);
     }
 
