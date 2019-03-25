@@ -32,7 +32,7 @@ typedef struct nu_free_cell
 } nu_free_cell;
 
 static pthread_mutex_t lock = PTHREAD_MUTEX_INITIALIZER;
-static const int64_t CHUNK_SIZE = 65536;
+static const int64_t CHUNK_SIZE = 4096;
 static const int64_t CELL_SIZE = (int64_t)sizeof(nu_free_cell);
 
 static nu_free_cell *nu_free_list = 0;
