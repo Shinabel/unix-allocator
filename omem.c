@@ -20,11 +20,6 @@ typedef struct nu_header
     int64_t size;
 } nu_header;
 
-typedef struct nu_footer
-{
-    int64_t size;
-} nu_footer;
-
 typedef struct nu_free_cell
 {
     int64_t size;
@@ -65,8 +60,6 @@ void init_bins() {
 static void
 nu_free_list_insert(nu_free_cell *cell)
 {
-    nu_footer* footer = (void *)cell + cell->size - sizeof(nu_footer);
-    footer->size = cell->size;
     pthread_mutex_lock(&lock);
     for (int i = 0; i < 7; i++) {
         if (bins[i].size <= cell->size && bins[i+1].size > cell->size) {
@@ -128,7 +121,7 @@ omalloc(size_t usize)
     int64_t size = (int64_t)usize;
 
     // space for size
-    int64_t alloc_size = size + (2 * sizeof(int64_t));
+    int64_t alloc_size = size + sizeof(nu_header);
 
     // space for free cell when returned to list
     if (alloc_size < CELL_SIZE)
@@ -163,8 +156,6 @@ omalloc(size_t usize)
     }
 
     *((int64_t *)cell) = alloc_size;
-    nu_footer* footer = (void *)cell + alloc_size - sizeof(nu_footer);
-    footer->size = alloc_size;
     return ((void *)cell) + sizeof(nu_header);
 }
 
