@@ -11,6 +11,7 @@
 #include <stdio.h>
 #include <pthread.h>
 #include <string.h>
+#include <math.h>
 
 #include "omem.h"
 
@@ -31,7 +32,16 @@ typedef struct nu_free_cell
     struct nu_free_cell *prev;
 } nu_free_cell;
 
-static pthread_mutex_t lock = PTHREAD_MUTEX_INITIALIZER;
+typedef struct nu_bin
+{
+    int64_t size;
+    struct nu_free_cell* node;
+} nu_bin;
+
+static int bin_length = 8;
+static nu_bin bins[8];
+static int bin_init = 0;
+
 static const int64_t CHUNK_SIZE = 4096;
 static const int64_t CELL_SIZE = (int64_t)sizeof(nu_free_cell);
 
@@ -39,6 +49,14 @@ static nu_free_cell *nu_free_list = 0;
 
 static long nu_malloc_chunks = 0;
 static long nu_free_chunks = 0;
+
+void init_bins() {
+    for (int i = 0; i < bin_length; i++) {
+        bins[i].size = 1 << (i+5); // starting from 32 = 2^5
+        bins[i].node = NULL;
+    }
+    bin_init = 1;
+}
 
 int64_t
 nu_free_list_length()
@@ -85,41 +103,32 @@ nu_free_list_coalesce()
 static void
 nu_free_list_insert(nu_free_cell *cell)
 {
-    if (nu_free_list == 0 || ((uint64_t)nu_free_list) > ((uint64_t)cell))
-    {
-        cell->next = nu_free_list;
-        nu_free_list = cell;
-        return;
+    nu_footer* footer = (void *)cell + cell->size - sizeof(nu_footer);
+    footer->size = cell->size;
+    for (int i = 7; i >= 0; i--) {
+        if (bins[i].size <= cell->size) {
+            nu_free_cell *temp = bins[i].node;
+            bins[i].node = cell;
+            cell->next = temp;
+            cell->prev = NULL;
+            if (temp != NULL) {
+                temp->prev = cell;
+            }
+        }
     }
-
-    nu_free_cell *pp = nu_free_list;
-
-    while (pp->next != 0 && ((uint64_t)pp->next) < ((uint64_t)cell))
-    {
-        pp = pp->next;
-    }
-
-    cell->next = pp->next;
-    pp->next = cell;
-
-    nu_free_list_coalesce();
 }
 
 static nu_free_cell *
 free_list_get_cell(int64_t size)
 {
-    nu_free_cell **prev = &nu_free_list;
-
-    for (nu_free_cell *pp = nu_free_list; pp != 0; pp = pp->next)
-    {
-        if (pp->size >= size)
-        {
-            *prev = pp->next;
-            return pp;
+    for (int i = 0; i < 8; i++) {
+        if (bins[i].node != NULL && bins[i].size >= size) {
+            nu_free_cell *temp = bins[i].node;
+            bins[i].node = bins[i].node->next;
+            return temp;
         }
-        prev = &(pp->next);
     }
-    return 0;
+    return NULL;
 }
 
 static nu_free_cell *
@@ -134,11 +143,14 @@ make_cell()
 void *
 omalloc(size_t usize)
 {
+    if (!bin_init) {
+        init_bins();
+    }
     pthread_mutex_lock(&lock);
     int64_t size = (int64_t)usize;
 
     // space for size
-    int64_t alloc_size = size + sizeof(int64_t);
+    int64_t alloc_size = size + (sizeof(int64_t) * 2);
 
     // space for free cell when returned to list
     if (alloc_size < CELL_SIZE)
@@ -152,11 +164,12 @@ omalloc(size_t usize)
         void *addr = mmap(0, alloc_size, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
         *((int64_t *)addr) = alloc_size;
         nu_malloc_chunks += 1;
+        pthread_mutex_unlock(&lock);
         return addr + sizeof(int64_t);
     }
 
     nu_free_cell *cell = free_list_get_cell(alloc_size);
-    if (!cell)
+    if (cell == NULL)
     {
         cell = make_cell();
     }
@@ -172,8 +185,10 @@ omalloc(size_t usize)
     }
 
     *((int64_t *)cell) = alloc_size;
+    nu_footer* footer = (void *)cell + alloc_size - sizeof(nu_footer);
+    footer->size = alloc_size;
     pthread_mutex_unlock(&lock);
-    return ((void *)cell) + sizeof(int64_t);
+    return ((void *)cell) + sizeof(nu_header);
 }
 
 void ofree(void *addr)
